@@ -10,49 +10,54 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type CollRepository struct {
+type CollRepository[T any] struct {
 	Collection *mongo.Collection
 }
 
-func NewCollRepository(dbName, collName string) repository.CRUDMongoDB {
+func NewCollRepository[T any](dbName, collName string) repository.CRUDMongoDB[T] {
 	client := GetMongoClient()
 	db := client.Database(dbName)
-	return &CollRepository{
+	return &CollRepository[T]{
 		Collection: db.Collection(collName),
 	}
+
 }
 
-func (r *CollRepository) Create(ctx context.Context, document any) (any, error) {
+func (r *CollRepository[T]) Create(
+	ctx context.Context,
+	document T,
+) (*mongo.InsertOneResult, error) {
+
 	result, err := r.Collection.InsertOne(ctx, document)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create document: %w", err)
+		return result, fmt.Errorf("failed to create document: %w", err)
 	}
-	return result.InsertedID, nil
-}
 
-func (r *CollRepository) GetAll(ctx context.Context, filter any) ([]any, error) {
+	return result, nil
+}
+func (r *CollRepository[T]) GetAll(
+	ctx context.Context,
+	filter any,
+) ([]T, error) {
+
 	cursor, err := r.Collection.Find(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find documents: %w", err)
+		return nil, err
 	}
 	defer cursor.Close(ctx)
 
-	var results []map[string]interface{}
+	var results []T
 	if err := cursor.All(ctx, &results); err != nil {
-		return nil, fmt.Errorf("failed to decode documents: %w", err)
+		return nil, err
 	}
 
-	var docs []any
-	for _, result := range results {
-		docs = append(docs, result)
-	}
-	return docs, nil
+	return results, nil
 }
 
 // GetAllWithOption retrieves documents based on the provided filter and options (e.g., limit, skip)
-func (r *CollRepository) GetAllWithOption(ctx context.Context, filter any, opts *options.FindOptions) ([]any, error) {
+func (r *CollRepository[T]) GetAllWithOption(ctx context.Context, filter any, opts *options.FindOptions) ([]T, error) {
 	// Create an empty slice to store the results
-	var results []any
+	var results []T
 
 	// Execute the query with the filter and options
 	cursor, err := r.Collection.Find(ctx, filter, opts)
@@ -63,7 +68,7 @@ func (r *CollRepository) GetAllWithOption(ctx context.Context, filter any, opts 
 
 	// Iterate over the cursor to decode each document and add to results slice
 	for cursor.Next(ctx) {
-		var doc bson.M
+		var doc T
 		if err := cursor.Decode(&doc); err != nil {
 			return nil, fmt.Errorf("failed to decode document: %w", err)
 		}
@@ -77,22 +82,21 @@ func (r *CollRepository) GetAllWithOption(ctx context.Context, filter any, opts 
 
 	return results, nil
 }
+func (r *CollRepository[T]) GetWithProjection(ctx context.Context, filter, projection any) ([]T, error) {
+	var results []T
 
-func (r *CollRepository) GetWithProjection(ctx context.Context, filter, projection any) ([]any, error) {
-	var results []any
 	cursor, err := r.Collection.Find(ctx, filter, options.Find().SetProjection(projection))
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute find query: %w", err)
 	}
 	defer cursor.Close(ctx)
 
-	// Iterate through the cursor and decode each document
 	for cursor.Next(ctx) {
-		var result bson.M
-		if err := cursor.Decode(&result); err != nil {
+		var item T
+		if err := cursor.Decode(&item); err != nil {
 			return nil, fmt.Errorf("failed to decode document: %w", err)
 		}
-		results = append(results, result)
+		results = append(results, item)
 	}
 
 	if err := cursor.Err(); err != nil {
@@ -102,7 +106,7 @@ func (r *CollRepository) GetWithProjection(ctx context.Context, filter, projecti
 	return results, nil
 }
 
-func (r *CollRepository) GetOneWithProjection(ctx context.Context, filter, projection any) (bson.M, error) {
+func (r *CollRepository[T]) GetOneWithProjection(ctx context.Context, filter, projection any) (bson.M, error) {
 	var result bson.M
 	err := r.Collection.FindOne(ctx, filter, options.FindOne().SetProjection(projection)).Decode(&result)
 	if err != nil {
@@ -114,8 +118,7 @@ func (r *CollRepository) GetOneWithProjection(ctx context.Context, filter, proje
 	return result, nil
 }
 
-
-func (r *CollRepository) GetFilter(ctx context.Context, filter any) (any, error) {
+func (r *CollRepository[T]) GetFilter(ctx context.Context, filter any) (bson.M, error) {
 	var result map[string]interface{}
 	err := r.Collection.FindOne(ctx, filter).Decode(&result)
 	if err != nil {
@@ -127,7 +130,7 @@ func (r *CollRepository) GetFilter(ctx context.Context, filter any) (any, error)
 	return result, nil
 }
 
-func (r *CollRepository) Update(ctx context.Context, filter, update any) (*mongo.UpdateResult, error) {
+func (r *CollRepository[T]) Update(ctx context.Context, filter, update any) (*mongo.UpdateResult, error) {
 	result, err := r.Collection.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update document: %w", err)
@@ -135,7 +138,7 @@ func (r *CollRepository) Update(ctx context.Context, filter, update any) (*mongo
 	return result, nil
 }
 
-func (r *CollRepository) UpdateMany(ctx context.Context, filter, update any) (*mongo.UpdateResult, error) {
+func (r *CollRepository[T]) UpdateMany(ctx context.Context, filter, update any) (*mongo.UpdateResult, error) {
 	result, err := r.Collection.UpdateMany(ctx, filter, update)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update documents: %w", err)
@@ -143,10 +146,29 @@ func (r *CollRepository) UpdateMany(ctx context.Context, filter, update any) (*m
 	return result, nil
 }
 
-func (r *CollRepository) Delete(ctx context.Context, filter any) (*mongo.DeleteResult, error) {
+func (r *CollRepository[T]) Delete(ctx context.Context, filter any) (*mongo.DeleteResult, error) {
 	result, err := r.Collection.DeleteOne(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete document: %w", err)
 	}
 	return result, nil
+}
+
+func (r *CollRepository[T]) AggregateLookup(
+	ctx context.Context,
+	pipeline mongo.Pipeline,
+) ([]bson.M, error) {
+
+	cursor, err := r.Collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute aggregate: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var results []bson.M
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode aggregate results: %w", err)
+	}
+
+	return results, nil
 }

@@ -8,14 +8,14 @@ graph TD
     getAllClassByEmail(GET /getclass --> getAllClassByEmail)
     updateClass(PATCH /class --> updateClass)
     deleteClass(DELETE /class --> deleteClass)
-    createCodeClass(POST /class/codeclass --> createCodeClass)
-    joinClass(POST /class/joinclass --> joinClass)
+    createCodeClass(POST /class/code-class --> createCodeClass)
+    joinClass(POST /class/join-class --> joinClass)
   end
   subgraph Handler
     createClass -->|Parse JSON| ClassEntity1(entity.Class)
     createClass -->|Call| classUseCaseCreate(UseCase.CreateClass)
 
-    getAllClass -->|Context.email_id| classUseCaseAll(UseCase.GetAllClass)
+    getAllClass -->|Context.user_id| classUseCaseAll(UseCase.GetAllClass)
     getAllClassByEmail -->|Context.email| classUseCaseAllEmail(UseCase.GetAllClassByEmail)
 
     updateClass -->|Parse JSON| ClassEntity2(entity.Class)

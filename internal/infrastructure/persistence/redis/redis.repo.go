@@ -27,7 +27,7 @@ func NewRedisClient(redisURL string) (repository.RedisRepository, error) {
 	// client := redis.NewClient(opt)
 
 	client := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
+		Addr:     redisURL,
 		Password: "", // No password set
 		DB:       0,  // Use default DB
 		Protocol: 2,  // Connection protocol
@@ -124,7 +124,6 @@ func (r *RedisClient) LRange(ctx context.Context, key string, start, stop int64)
 }
 
 // Set operations
-
 func (r *RedisClient) SAdd(ctx context.Context, key string, expiration time.Duration, members ...interface{}) error {
 	err := r.client.SAdd(ctx, key, members...).Err()
 	if err != nil {

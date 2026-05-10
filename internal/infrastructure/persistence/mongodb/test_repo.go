@@ -7,80 +7,65 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	entity "quiz-app/internal/domain/entities"
+	entity "quiz-app/internal/domain/entity"
 	"quiz-app/internal/domain/repository"
-	utils "quiz-app/internal/util"
 )
 
-// TestMongoRepository implements the repository.TestRepository interface
-type TestMongoRepository struct {
-	CollRepo repository.CRUDMongoDB
+type TestTemplateMongoRepository struct {
+	CollRepo repository.CRUDMongoDB[entity.TestTemplete]
 }
 
-// NewTestMongoRepository tạo một instance mới của TestMongoRepository
-func NewTestMongoRepository() repository.TestRepository {
-	collRepo := NewCollRepository("dbapp", "tests")
-	return &TestMongoRepository{
+func NewTestTemplateMongoRepository() repository.TestTemplateRepository {
+	collRepo := NewCollRepository[entity.TestTemplete]("dbapp", "test_templates")
+	return &TestTemplateMongoRepository{
 		CollRepo: collRepo,
 	}
 }
 
-// GetTestesByAuthorEmail implements repository.TestRepository.GetTestesByAuthorEmail
-func (r *TestMongoRepository) GetTestsByAuthorEmail(ctx context.Context, email string) ([]any, error) {
-	filter := bson.M{"author_mail": email}
-
+func (r *TestTemplateMongoRepository) GetTestTemplates(ctx context.Context, userID string) ([]entity.TestTemplete, error) {
+	filter := bson.M{"user_id": userID}
 	results, err := r.CollRepo.GetAll(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get test by author email: %w", err)
+		return nil, fmt.Errorf("failed to get test templates: %w", err)
 	}
-
 	return results, nil
 }
 
-// CreateTest implements repository.TestRepository.CreateTest
-func (r *TestMongoRepository) CreateTest(ctx context.Context, class *entity.Test) (primitive.ObjectID, error) {
-	classField, err := utils.GenerateUpdateFields(class)
+func (r *TestTemplateMongoRepository) GetTestTemplatesByIDs(ctx context.Context, userID string, testIDs []primitive.ObjectID) ([]entity.TestTemplete, error) {
+	filter := bson.M{"_id": bson.M{"$in": testIDs}}
+	results, err := r.CollRepo.GetAll(ctx, filter)
 	if err != nil {
-		return primitive.NilObjectID, fmt.Errorf("failed to create class: %w", err)
+		return nil, fmt.Errorf("failed to get test templates by IDs: %w", err)
 	}
-	classField["answer_user"] = bson.A{}
-	insertedID, err := r.CollRepo.Create(ctx, classField)
-	if err != nil {
-		return primitive.NilObjectID, fmt.Errorf("failed to create class: %w", err)
-	}
-
-	// Chuyển đổi insertedID về ObjectID
-	objID, ok := insertedID.(primitive.ObjectID)
-	if !ok {
-		return primitive.NilObjectID, fmt.Errorf("failed to convert inserted ID to ObjectID")
-	}
-
-	return objID, nil
+	return results, nil
 }
 
-// UpdateTest implements repository.TestRepository.UpdateTest
-func (r *TestMongoRepository) UpdateTest(ctx context.Context, test *entity.Test) (any, error) {
-	filter := bson.M{"email_id": test.EmailID, "_id": test.ID}
+func (r *TestTemplateMongoRepository) CreateTestTemplate(ctx context.Context, test entity.TestTemplete) (primitive.ObjectID, error) {
+	test.ID = primitive.NewObjectID()
 
-	testField, err := utils.GenerateUpdateFields(test)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to update test: %w", err)
+	result, err := r.CollRepo.Create(ctx, test)
+	fmt.Println("Inserted ID:", result)
+	if err != nil || result.InsertedID == primitive.NilObjectID {
+		return primitive.NilObjectID, fmt.Errorf("failed to create test template: %w", err)
 	}
 
-	results, er := r.CollRepo.Update(ctx, filter, bson.M{"$set": testField})
-	if er != nil || results.MatchedCount == 0 {
-		return nil, fmt.Errorf("failed to update test: %w", er)
+	return test.ID, nil
+}
+
+func (r *TestTemplateMongoRepository) UpdateTestTemplate(ctx context.Context, test entity.TestTemplete) (entity.TestTemplete, error) {
+	filter := bson.M{"user_id": test.UserID, "_id": test.ID}
+	results, err := r.CollRepo.Update(ctx, filter, bson.M{"$set": test})
+	if err != nil || results.MatchedCount == 0 {
+		return entity.TestTemplete{}, fmt.Errorf("failed to update test template: %w", err)
 	}
 	return test, nil
 }
 
-// DeleteTest implements repository.TestRepository.DeleteTest
-func (r *TestMongoRepository) DeleteTest(ctx context.Context, id primitive.ObjectID, email string) error {
-	filter := bson.M{"email_id": email, "_id": id}
+func (r *TestTemplateMongoRepository) DeleteTestTemplate(ctx context.Context, userID string, id primitive.ObjectID) error {
+	filter := bson.M{"user_id": userID, "_id": id}
 	_, err := r.CollRepo.Delete(ctx, filter)
 	if err != nil {
-		return fmt.Errorf("failed to delete test: %w", err)
+		return fmt.Errorf("failed to delete test template: %w", err)
 	}
 	return nil
 }

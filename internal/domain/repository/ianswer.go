@@ -2,14 +2,15 @@ package repository
 
 import (
 	"context"
-	entity "quiz-app/internal/domain/entities"
+	"quiz-app/internal/domain/entity"
 
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-type AnswerRepository interface {
-	CreateAnswer(ctx context.Context, answer entity.TestAnswer) (*entity.TestAnswer, error)
-	UpdateAnswer(ctx context.Context, answer entity.TestAnswer) (*entity.TestAnswer, error)
-	GetAnswer(ctx context.Context, filter bson.M) (entity.TestAnswer, error)
-	GetAllAnswer(ctx context.Context, infoAnswer bson.M) ([]entity.TestAnswer, error)
+type SubmissionRepository interface {
+	ExportData(
+		ctx context.Context,
+		classID primitive.ObjectID,
+		testID primitive.ObjectID,
+	) (*entity.ClassExport, error)
 }

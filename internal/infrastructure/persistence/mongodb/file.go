@@ -2,102 +2,135 @@ package persistence
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
-	entity "quiz-app/internal/domain/entities"
+	entity "quiz-app/internal/domain/entity"
 	"quiz-app/internal/domain/repository"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// FileMongoRepository implements the repository.FileRepository interface
+const filesDB = "dbapp"
+const filesColl = "files"
+
 type FileMongoRepository struct {
-	CollRepo repository.CRUDMongoDB
+	coll *mongo.Collection
 }
 
-// NewFileMongoRepository creates a new instance of FileMongoRepository
 func NewFileMongoRepository() repository.FileRepository {
-	collRepo := NewCollRepository("dbapp", "files")
-	return &FileMongoRepository{
-		CollRepo: collRepo,
-	}
-}
-
-// CreateFile implements repository.FileRepository.CreateFile
-func (r *FileMongoRepository) CreateFile(ctx context.Context, file *entity.File) (primitive.ObjectID, error) {
-	insertedID, err := r.CollRepo.Create(ctx, file)
-	if err != nil {
-		return primitive.NilObjectID, fmt.Errorf("failed to create file: %w", err)
-	}
-	return insertedID.(primitive.ObjectID), nil
-}
-
-// GetAllFiles implements repository.FileRepository.GetAllFiles
-func (r *FileMongoRepository) GetFile(ctx context.Context, file *entity.File) (any, error) {
-	filter := bson.M{"metadata.email": file.Metadata.Email} // Assuming files are filtered by userID
-	allFiles, err := r.CollRepo.GetAll(ctx, filter)         // Fetch all matching files
-	if err != nil {
-		return nil, fmt.Errorf("failed to get files by userID: %w", err)
-	}
-	return allFiles, nil
-}
-
-// GetAllFiles implements repository.FileRepository.GetAllFiles
-func (r *FileMongoRepository) FindByName(ctx context.Context, file *entity.File) (any, error) {
-	filter := bson.M{"metadata.email": file.Metadata.Email, "filename": file.Filename} // Assuming files are filtered by userID
-	allFiles, err := r.CollRepo.GetAll(ctx, filter)                                    // Fetch all matching files
-	if err != nil {
-		return nil, fmt.Errorf("failed to get files by userID: %w", err)
-	}
-	return allFiles, nil
-}
-
-// GetAllFiles implements repository.FileRepository.GetAllFiles
-func (r *FileMongoRepository) GetAllFile(ctx context.Context, email_id string) (any, error) {
-	filter := bson.M{"metadata.emailid": email_id}  // Assuming files are filtered by userID
-	allFiles, err := r.CollRepo.GetAll(ctx, filter) // Fetch all matching files
-	if err != nil {
-		return nil, fmt.Errorf("failed to get files by userID: %w", err)
-	}
-
-	return allFiles, nil
-}
-
-// GetAllImageFile implements repository.FileRepository.GetAllImageFile
-func (r *FileMongoRepository) GetAllImageFile(ctx context.Context, email_id string) ([]any, error) {
-	filter := bson.M{
-		"metadata.emailid": email_id,
-		"fileType": bson.M{
-			"$regex": "^image/", // Lọc fileType bắt đầu bằng "image/"
+	coll := GetMongoClient().Database(filesDB).Collection(filesColl)
+	// Indexes: per CLAUDE.md I3.
+	// - (owner_id, filename) unique → cấm trùng tên trong cùng owner.
+	// - owner_id alone → list-by-owner pagination.
+	_, _ = coll.Indexes().CreateMany(context.Background(), []mongo.IndexModel{
+		{
+			Keys: bson.D{{Key: "owner_id", Value: 1}, {Key: "filename", Value: 1}},
+			Options: options.Index().
+				SetName("uniq_owner_filename").
+				SetUnique(true),
 		},
-	}
-	projection := bson.M{"filename": 1, "_id": 0}
-	allFiles, err := r.CollRepo.GetWithProjection(ctx, filter, projection) // Fetch all matching files
-	if err != nil {
-		return nil, fmt.Errorf("failed to get image files for user %s: %w", email_id, err)
-	}
-
-	return allFiles, nil
+		{
+			Keys:    bson.D{{Key: "owner_id", Value: 1}, {Key: "created_at", Value: -1}},
+			Options: options.Index().SetName("owner_created"),
+		},
+	})
+	return &FileMongoRepository{coll: coll}
 }
 
-// UpdateFile implements repository.FileRepository.UpdateFile
-func (r *FileMongoRepository) UpdateFile(ctx context.Context, file *entity.File) (any, error) {
-	filter := bson.M{"metadata.email": file.Metadata.Email, "_id": file.ID}
-
-	_, err := r.CollRepo.Update(ctx, filter, bson.M{"$set": file})
-	if err != nil {
-		return &entity.File{}, fmt.Errorf("failed to update file: %w", err)
-	}
-	return file, nil
+func (r *FileMongoRepository) Create(
+	ctx context.Context,
+	file entity.File,
+) (any, error) {
+	return r.coll.InsertOne(ctx, file)
 }
 
-// DeleteFile implements repository.FileRepository.DeleteFile
-func (r *FileMongoRepository) DeleteFile(ctx context.Context, file entity.File) error {
-	filter := bson.M{"metadata.email": file.Metadata.Email, "_id": file.ID}
-	result, err := r.CollRepo.Delete(ctx, filter)
-	if err != nil && result.DeletedCount == 0 {
-		return fmt.Errorf("failed to delete file: %w", err)
+func (r *FileMongoRepository) FindByID(
+	ctx context.Context,
+	id primitive.ObjectID,
+) (*entity.File, error) {
+	var f entity.File
+	if err := r.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&f); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &f, nil
+}
+
+func (r *FileMongoRepository) FindByOwnerAndFilename(
+	ctx context.Context,
+	ownerID, filename string,
+) (*entity.File, error) {
+	var f entity.File
+	err := r.coll.
+		FindOne(ctx, bson.M{"owner_id": ownerID, "filename": filename}).
+		Decode(&f)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &f, nil
+}
+
+// ListByOwner returns paginated files belonging to ownerID, optionally filtered
+// by content-type prefix (e.g. "image/", "audio/", or "" for all).
+func (r *FileMongoRepository) ListByOwner(
+	ctx context.Context,
+	ownerID, mimePrefix string,
+	page, limit int64,
+) ([]entity.File, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+
+	filter := bson.M{"owner_id": ownerID}
+	if mimePrefix != "" {
+		filter["content_type"] = bson.M{"$regex": "^" + mimePrefix}
+	}
+
+	total, err := r.coll.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetSkip((page - 1) * limit).
+		SetLimit(limit)
+
+	cur, err := r.coll.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cur.Close(ctx)
+
+	var items []entity.File
+	if err := cur.All(ctx, &items); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func (r *FileMongoRepository) DeleteOwned(
+	ctx context.Context,
+	id primitive.ObjectID,
+	ownerID string,
+) error {
+	res, err := r.coll.DeleteOne(ctx, bson.M{"_id": id, "owner_id": ownerID})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return mongo.ErrNoDocuments
 	}
 	return nil
 }

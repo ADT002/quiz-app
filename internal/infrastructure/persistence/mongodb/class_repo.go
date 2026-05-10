@@ -6,244 +6,161 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 
-	entity "quiz-app/internal/domain/entities"
+	entity "quiz-app/internal/domain/entity"
 	"quiz-app/internal/domain/repository"
 )
 
-// ClassMongoRepository implements the repository.ClassRepository interface
 type ClassMongoRepository struct {
-	CollRepo repository.CRUDMongoDB
+	CollRepo repository.CRUDMongoDB[entity.Class]
+	coll     *mongo.Collection
 }
 
-// NewClassMongoRepository tạo một instance mới của ClassMongoRepository
 func NewClassMongoRepository() repository.ClassRepository {
-	collRepo := NewCollRepository("dbapp", "classes")
-	return &ClassMongoRepository{
-		CollRepo: collRepo,
-	}
+	collRepo := NewCollRepository[entity.Class]("dbapp", "classes")
+	coll := GetMongoClient().Database("dbapp").Collection("classes")
+	return &ClassMongoRepository{CollRepo: collRepo, coll: coll}
 }
 
-// CreateClass implements repository.ClassRepository.CreateClass
-func (r *ClassMongoRepository) CreateClass(ctx context.Context, class *entity.Class) (primitive.ObjectID, error) {
-	insertedID, err := r.CollRepo.Create(ctx, class)
+func (r *ClassMongoRepository) CreateClass(ctx context.Context, class entity.Class) (primitive.ObjectID, error) {
+	_, err := r.CollRepo.Create(ctx, class)
 	if err != nil {
 		return primitive.NilObjectID, fmt.Errorf("failed to create class: %w", err)
 	}
-
-	// Chuyển đổi insertedID về ObjectID
-	objID, ok := insertedID.(primitive.ObjectID)
-	if !ok {
-		return primitive.NilObjectID, fmt.Errorf("failed to convert inserted ID to ObjectID")
-	}
-
-	return objID, nil
+	return class.ID, nil
 }
 
-// GetClassByAuthorEmail fetches all classes for a given author's email ID.
-func (r *ClassMongoRepository) GetClassByAuthorEmail(ctx context.Context, email string) ([]any, error) {
-	// Define a filter based on email_id
-	filter := bson.M{"author_mail": email}
-
-	// Query the database to retrieve all matching documents
-	results, err := r.CollRepo.GetAll(ctx, filter)
+func (r *ClassMongoRepository) GetClasses(ctx context.Context, userID string) ([]entity.Class, error) {
+	results, err := r.CollRepo.GetAll(ctx, bson.M{"user_id": userID})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get classes by author email: %w", err)
+		return nil, fmt.Errorf("failed to get classes by user ID: %w", err)
 	}
-
-	// Return the list of classes
 	return results, nil
 }
 
-func (r *ClassMongoRepository) GetAllClassByEmail(ctx context.Context, email string) ([]any, error) {
-	filter := bson.M{"students_accept": email}
-	projection := bson.M{"test_id": 1, "class_name": 1, "author_mail": 1, "tags": 1, "_id": 1}
-	classes, err := r.CollRepo.GetWithProjection(ctx, filter, projection)
-	if err != nil {
-		return []any{}, fmt.Errorf("failed to get classes by email: %w", err)
-	}
-
-	return classes, nil
-}
-
-// UpdateClass implements repository.ClassRepository.UpdateClass
-func (r *ClassMongoRepository) UpdateClass(ctx context.Context, class *entity.Class) (any, error) {
-	filter := bson.M{"_id": class.ID} // Giả sử class có trường ID kiểu ObjectID
-	fmt.Println("CLASS.StudentsWait: ", class.StudentsWait)
+func (r *ClassMongoRepository) UpdateClass(ctx context.Context, class entity.Class) (entity.Class, error) {
+	filter := bson.M{"user_id": class.UserID, "_id": class.ID}
 	_, err := r.CollRepo.Update(ctx, filter, bson.M{"$set": class})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update class: %w", err)
+		return class, fmt.Errorf("failed to update class: %w", err)
 	}
 	return class, nil
 }
 
-// DeleteClass implements repository.ClassRepository.DeleteClass
-func (r *ClassMongoRepository) DeleteClass(ctx context.Context, emailID string, id primitive.ObjectID) error {
-	filter := bson.M{"email_id": emailID, "_id": id}
-	_, err := r.CollRepo.Delete(ctx, filter)
+func (r *ClassMongoRepository) DeleteClass(ctx context.Context, userID string, id primitive.ObjectID) error {
+	_, err := r.CollRepo.Delete(ctx, bson.M{"user_id": userID, "_id": id})
 	if err != nil {
 		return fmt.Errorf("failed to delete class: %w", err)
 	}
 	return nil
 }
 
-func (r *ClassMongoRepository) JoinClass(ctx context.Context, classID primitive.ObjectID, email string) error {
-	// Tạo filter để tìm class theo _id
-	filter := bson.M{"_id": classID}
+// JoinClass: public class → push thẳng accept; private → push wait. Idempotent
+// nhờ $addToSet (CLAUDE.md F3 edge: học sinh đã accept → 200 không nhân đôi).
+func (r *ClassMongoRepository) JoinClass(
+	ctx context.Context,
+	classID primitive.ObjectID,
+	userID string,
+	emailIDStudent string,
+	emailStudent string,
+) error {
+	filter := bson.M{"user_id": userID, "_id": classID}
 
-	// Tìm class dựa trên classID để kiểm tra giá trị của is_public
-	result, err := r.CollRepo.GetFilter(ctx, filter)
+	classDoc, err := r.CollRepo.GetFilter(ctx, filter)
 	if err != nil {
 		return fmt.Errorf("failed to find class: %w", err)
 	}
 
-	if result == nil {
-		return fmt.Errorf("no class found with the given ID")
+	target := "students_wait"
+	if classDoc["is_public"] == true {
+		target = "students_accept"
 	}
 
-	// Thực hiện type assertion để đảm bảo result có kiểu map[string]interface{}
-	classDoc, ok := result.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("unexpected type for class document, expected map[string]interface{} but got %T", result)
-	}
-
-	// Kiểm tra giá trị của is_public
-	isPublic, ok := classDoc["is_public"].(bool)
-	if !ok {
-		return fmt.Errorf("is_public field not found or is not of type bool, found type: %T", classDoc["is_public"])
-	}
-
-	// Khởi tạo students_accept và students_wait nếu chúng là null
-	update := bson.M{}
-	if studentsAccept, ok := classDoc["students_accept"]; !ok || studentsAccept == nil {
-		update["$set"] = bson.M{"students_accept": bson.A{}}
-	}
-	if studentsWait, ok := classDoc["students_wait"]; !ok || studentsWait == nil {
-		update["$set"] = bson.M{"students_wait": bson.A{}}
-	}
-
-	// Thực hiện cập nhật ban đầu nếu cần
-	if len(update) > 0 {
-		_, err = r.CollRepo.Update(ctx, filter, update)
-		if err != nil {
-			return fmt.Errorf("failed to initialize students fields: %w", err)
-		}
-	}
-
-	// Cập nhật students_accept hoặc students_wait dựa trên is_public
-	if isPublic {
-		_, err = r.CollRepo.Update(ctx, filter, bson.M{
-			"$addToSet": bson.M{"students_accept": email},
-		})
-	} else {
-		_, err = r.CollRepo.Update(ctx, filter, bson.M{
-			"$addToSet": bson.M{"students_wait": email},
-		})
-	}
-
+	_, err = r.CollRepo.Update(ctx, filter, bson.M{
+		"$addToSet": bson.M{
+			target: bson.M{"user_id": emailIDStudent, "email": emailStudent},
+		},
+	})
 	if err != nil {
-		return fmt.Errorf("failed to update class: %w", err)
+		return fmt.Errorf("failed to join class: %w", err)
 	}
-
 	return nil
 }
 
-func (r *ClassMongoRepository) GetQuestionOfTest(ctx context.Context, classID, testID primitive.ObjectID, email string) ([]primitive.ObjectID, primitive.M, error) {
+// ApproveStudent: atomic move from students_wait → students_accept, but only
+// if studentID is currently in students_wait. Filter ràng buộc owner_id để
+// teacher khác không approve hộ.
+func (r *ClassMongoRepository) ApproveStudent(
+	ctx context.Context,
+	classID primitive.ObjectID,
+	ownerID, studentID string,
+) error {
 	filter := bson.M{
-		"_id": classID,
-		"test": bson.M{
-			"$elemMatch": bson.M{
-				"_id": testID,
-			},
-		},
+		"_id":                       classID,
+		"user_id":                   ownerID,
+		"students_wait.user_id":     studentID,
 	}
-
-	projection := bson.M{
-		"test.$": 1, // Lấy đúng test cần tìm trong mảng
+	// Find student record to copy into accept (preserve email/name).
+	var doc bson.M
+	if err := r.coll.FindOne(ctx, filter).Decode(&doc); err != nil {
+		return fmt.Errorf("approve: pending student not found: %w", err)
 	}
-
-	result, err := r.CollRepo.GetOneWithProjection(ctx, filter, projection)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get test from class: %w", err)
-	}
-	fmt.Printf("Result: %#v\n", result) // In kết quả trả về để kiểm tra
-
-	if len(result) == 0 {
-		return nil, nil, fmt.Errorf("no class found")
-	}
-
-	tests, ok := result["test"].(bson.A)
-	if !ok || len(tests) == 0 {
-		return nil, nil, fmt.Errorf("no matching test found")
-	}
-
-	testDoc, ok := tests[0].(bson.M)
-	if !ok {
-		return nil, nil, fmt.Errorf("invalid test document format")
-	}
-
-	questionIDsRaw, ok := testDoc["question_ids"].(bson.A)
-	if !ok {
-		return nil, nil, fmt.Errorf("question_ids not found or invalid")
-	}
-	fmt.Println(questionIDsRaw)
-
-	var questionIDs []primitive.ObjectID
-	for _, q := range questionIDsRaw {
-		if oid, ok := q.(primitive.ObjectID); ok {
-			questionIDs = append(questionIDs, oid)
+	var copyInfo bson.M
+	for _, s := range doc["students_wait"].(bson.A) {
+		if entry, ok := s.(bson.M); ok && entry["user_id"] == studentID {
+			copyInfo = entry
+			break
 		}
 	}
+	if copyInfo == nil {
+		return fmt.Errorf("approve: student %s not in wait list", studentID)
+	}
 
-	delete(testDoc, "question_ids")
-
-	return questionIDs, testDoc, nil
+	_, err := r.coll.UpdateOne(ctx,
+		bson.M{"_id": classID, "user_id": ownerID},
+		bson.M{
+			"$pull":     bson.M{"students_wait": bson.M{"user_id": studentID}},
+			"$addToSet": bson.M{"students_accept": copyInfo},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("approve update failed: %w", err)
+	}
+	return nil
 }
 
-func (r *ClassMongoRepository) GetAllTestOfClass(ctx context.Context, email string, ids primitive.ObjectID) ([]any, error) {
-	filter := bson.M{
-		"_id": ids,
-	}
-
-	projection := bson.M{
-		"test":       1,
-		"class_name": 1,
-		"_id":        1,
-	}
-
-	classes, err := r.CollRepo.GetWithProjection(ctx, filter, projection)
+func (r *ClassMongoRepository) RejectStudent(
+	ctx context.Context,
+	classID primitive.ObjectID,
+	ownerID, studentID string,
+) error {
+	res, err := r.coll.UpdateOne(ctx,
+		bson.M{"_id": classID, "user_id": ownerID},
+		bson.M{"$pull": bson.M{"students_wait": bson.M{"user_id": studentID}}},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get class tests: %w", err)
+		return fmt.Errorf("reject failed: %w", err)
 	}
-
-	var tests []any
-
-	for _, c := range classes {
-		classDoc, ok := c.(bson.M)
-		if !ok {
-			continue
-		}
-
-		className := classDoc["class_name"]
-		classID := classDoc["_id"]
-		classTests, ok := classDoc["test"].(bson.A)
-		if !ok {
-			continue
-		}
-
-		for _, t := range classTests {
-			testDoc, ok := t.(bson.M)
-			if !ok {
-				continue
-			}
-
-			testDoc["class_name"] = className
-			testDoc["class_id"] = classID
-
-			tests = append(tests, testDoc) // testDoc là kiểu bson.M → phù hợp với any
-		}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("class not found or not owned")
 	}
+	return nil
+}
 
-	return tests, nil
+// GetAllTestOfClass / GetQuestionOfTest delegated to TestOfClassRepository.
+func (r *ClassMongoRepository) GetAllTestOfClass(
+	ctx context.Context,
+	email string,
+	id primitive.ObjectID,
+) ([]entity.TestOfClass, error) {
+	return nil, nil
+}
 
+func (r *ClassMongoRepository) GetQuestionOfTest(
+	ctx context.Context,
+	classID, testID primitive.ObjectID,
+	email string,
+) ([]primitive.ObjectID, entity.TestOfClass, error) {
+	return nil, entity.TestOfClass{}, nil
 }

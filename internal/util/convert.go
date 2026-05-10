@@ -1,9 +1,13 @@
 package utils
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	entity "quiz-app/internal/domain/entities"
+	"net/http"
+	entity "quiz-app/internal/domain/entity"
+	"quiz-app/internal/pkg"
 	"reflect"
 	"time"
 
@@ -137,15 +141,18 @@ func GenerateUpdateFields(targetStruct any) (bson.M, error) {
 	return updateFields, nil
 }
 
-// cleanOptions filters out unnecessary fields from the options slice
+// cleanOptions filters out unnecessary fields from the options slice.
+// Emits `file_id` (ObjectID ref) per E#17 — legacy `imageurl` is gone.
 func cleanOptions(options []entity.Option) []bson.M {
 	cleanedOptions := []bson.M{}
 	for _, option := range options {
 		cleanedOption := bson.M{
-			"id":        option.ID,
-			"text":      option.Text,
-			"imageurl":  option.ImageURL,
-			"iscorrect": option.IsCorrect,
+			"id":         option.ID,
+			"text":       option.Text,
+			"is_correct": option.IsCorrect,
+		}
+		if option.FileID != nil {
+			cleanedOption["file_id"] = *option.FileID
 		}
 		cleanedOptions = append(cleanedOptions, cleanedOption)
 	}
@@ -156,11 +163,11 @@ func cleanFillInBlanks(blanks []entity.FillInTheBlank) []bson.M {
 	cleaned := []bson.M{}
 	for _, item := range blanks {
 		cleaned = append(cleaned, bson.M{
-			"id":             item.ID,
-			"text_before":    item.TextBefore,
-			"blank":          item.Blank,
-			"correct_answer": item.CorrectAnswer,
-			"text_after":     item.TextAfter,
+			"id":                 item.ID,
+			"text_before":        item.TextBefore,
+			"blank":              item.Blank,
+			"correct_submission": item.CorrectSubmission,
+			"text_after":         item.TextAfter,
 		})
 	}
 	return cleaned
@@ -263,10 +270,10 @@ func RemoveKeysFromList(list []bson.M, keysToRemove []string) {
 	}
 }
 
-// RemoveAnswer removes specific fields from elements in an array of bson.M
-func RemoveAnswer(questionList []bson.M, answerField string) {
+// RemoveSubmission removes specific fields from elements in an array of bson.M
+func RemoveSubmission(questionList []bson.M, submissionField string) {
 	for _, question := range questionList {
-		delete(question, answerField)
+		delete(question, submissionField)
 	}
 }
 
@@ -284,33 +291,32 @@ func ConvertToBsonMArray(array bson.A) []bson.M {
 func RemoveEmptyFillInTheBlanks(fillInTheBlanks []entity.FillInTheBlank) []entity.FillInTheBlank {
 	var result []entity.FillInTheBlank
 	for _, item := range fillInTheBlanks {
-		if item.CorrectAnswer != "" {
+		if item.CorrectSubmission != "" {
 			result = append(result, item)
 		}
 	}
 	return result
 }
 
-func RemoveEmptyOptions(options []entity.OptionAnswer) []entity.OptionAnswer {
-	var result []entity.OptionAnswer
-	for _, option := range options {
-		result = append(result, option)
-	}
-	return result
+func GetStringFromCtx(ctx context.Context, key any) (string, bool) {
+	v, ok := ctx.Value(key).(string)
+	return v, ok
 }
 
-// Function to remove empty QuestionAnswer entries
-func RemoveEmptyQuestionAnswers(answers []entity.QuestionAnswer) []entity.QuestionAnswer {
-	var result []entity.QuestionAnswer
-	for _, answer := range answers {
-		// Clean up the fields
-		answer.FillInTheBlanks = RemoveEmptyFillInTheBlanks(answer.FillInTheBlanks)
-		answer.Options = RemoveEmptyOptions(answer.Options)
+func DecodeJSONBody[T any](w http.ResponseWriter, r *http.Request, dst *T) bool {
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		pkg.SendError(w, "Invalid JSON", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
 
-		// Only include non-empty QuestionAnswer entries
-		if !answer.QuestionID.IsZero() && len(answer.FillInTheBlanks) > 0 || len(answer.Options) > 0 {
-			result = append(result, answer)
+func HasPermission(perms []string, target string) bool {
+	for _, p := range perms {
+		fmt.Println(p)
+		if p == target {
+			return true
 		}
 	}
-	return result
+	return false
 }

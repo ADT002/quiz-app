@@ -2,15 +2,31 @@ package repository
 
 import (
 	"context"
-	entity "quiz-app/internal/domain/entities"
+	entity "quiz-app/internal/domain/entity"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-type TestRepository interface {
-	CreateTest(ctx context.Context, test *entity.Test) (primitive.ObjectID, error)
-	GetTestsByAuthorEmail(ctx context.Context, email string) ([]any, error)
-	UpdateTest(ctx context.Context, test *entity.Test) (any, error)
-	DeleteTest(ctx context.Context, id primitive.ObjectID, email string) error
-	
+type TestTemplateRepository interface {
+	CreateTestTemplate(
+		ctx context.Context,
+		test entity.TestTemplete) (primitive.ObjectID, error)
+
+	GetTestTemplates(
+		ctx context.Context,
+		userID string) ([]entity.TestTemplete, error)
+
+	GetTestTemplatesByIDs(
+		ctx context.Context,
+		userID string,
+		testIDs []primitive.ObjectID) ([]entity.TestTemplete, error)
+
+	UpdateTestTemplate(
+		ctx context.Context,
+		test entity.TestTemplete) (entity.TestTemplete, error)
+
+	DeleteTestTemplate(
+		ctx context.Context,
+		userID string,
+		id primitive.ObjectID) error
 }

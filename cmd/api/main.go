@@ -12,6 +12,7 @@ func LoadConfig() bool {
 	// // Không cần dòng này khi triển khai trên Fly.io
 	err := godotenv.Load(".env")
 	if err != nil {
+		fmt.Println("FAIL")
 		return false
 	}
 
@@ -37,8 +38,9 @@ func LoadConfig() bool {
 	// appEnv := os.Getenv("APP_ENV")
 	// redisURI := os.Getenv("REDIS_URI")
 	// mongoDBURI := os.Getenv("MONGODB_URI")
-	// awsAccessKeyID := os.Getenv("aws_access_key_id")
-	// awsSecretAccessKey := os.Getenv("aws_secret_access_key")
+
+	// awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
+	// awsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 
 	// // Kiểm tra nếu các biến môi trường quan trọng có giá trị hay không
 	// if port == "" || appEnv == "" || redisURI == "" || mongoDBURI == "" || awsAccessKeyID == "" || awsSecretAccessKey == "" {

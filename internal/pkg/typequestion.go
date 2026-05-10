@@ -13,9 +13,9 @@ import (
 func TypeShuffleQuestion(typeQuestion string) (string, string) {
 	switch typeQuestion {
 	case "fill_in_the_blank":
-		return "fill_in_the_blank", "correct_answer"
+		return "fill_in_the_blank", "correct_submission"
 	case "single_choice_question", "multiple_choice_question":
-		return "options", "iscorrect"
+		return "options", "is_correct"
 	case "order_question":
 		return "order_items", "order"
 	// case "match_choice_question":
@@ -25,10 +25,10 @@ func TypeShuffleQuestion(typeQuestion string) (string, string) {
 	}
 }
 
-// RemoveAnswer removes specific fields from elements in an array of bson.M
-func RemoveAnswer(questionList []bson.M, answerField string) []bson.M {
+// RemoveSubmission removes specific fields from elements in an array of bson.M
+func RemoveSubmission(questionList []bson.M, submissionField string) []bson.M {
 	for _, question := range questionList {
-		delete(question, answerField)
+		delete(question, submissionField)
 	}
 	return questionList
 }
@@ -36,9 +36,9 @@ func RemoveAnswer(questionList []bson.M, answerField string) []bson.M {
 // *****************SHUFFLE*******************
 
 func ProcessQuestion(question bson.M) bson.M {
-	// Determine the field names for options and answers based on the question type
+	// Determine the field names for options and submissions based on the question type
 	typeQuestion := question["type"].(string)
-	arrayField, answerField := TypeShuffleQuestion(typeQuestion)
+	arrayField, submissionField := TypeShuffleQuestion(typeQuestion)
 	switch typeQuestion {
 	case "match_choice_question":
 		if array, ok := question[arrayField].(bson.A); ok {
@@ -63,7 +63,7 @@ func ProcessQuestion(question bson.M) bson.M {
 			// Update the question with modified order items
 			question[arrayField] = swapFields
 		}
-		if arrayField == "" || answerField == "" {
+		if arrayField == "" || submissionField == "" {
 			return question // Return original question if fields are not determined
 		}
 	}
@@ -90,7 +90,7 @@ func swap(array bson.A) bson.A {
 	return result
 }
 
-func ShuffleQuestionsAndAnswers(questionList []bson.M) []bson.M {
+func ShuffleQuestionsAndSubmissions(questionList []bson.M) []bson.M {
 	// Seed the random number generator
 	rand.Seed(time.Now().UnixNano())
 

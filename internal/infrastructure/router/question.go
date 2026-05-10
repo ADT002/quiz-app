@@ -3,182 +3,404 @@ package routes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	entity "quiz-app/internal/domain/entities"
-	"quiz-app/internal/domain/service"
+	"quiz-app/internal/auth"
+	"quiz-app/internal/constant"
+	entity "quiz-app/internal/domain/entity"
+	"quiz-app/internal/domain/usecase"
 	"quiz-app/internal/pkg"
+	utils "quiz-app/internal/util"
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type RoutesQuestion struct {
-	auth            service.AuthHandler
-	questionUseCase service.QuestionUseCase
+	auth            auth.AuthHandler
+	questionUseCase usecase.QuestionUseCase
+	topicUseCase    usecase.TopicUseCase
+	levelUseCase    usecase.LevelUseCase
 }
 
-func NewRouterQuestion(questionUseCase service.QuestionUseCase, auth service.AuthHandler) *RoutesQuestion {
+func NewRouterQuestion(
+	questionUseCase usecase.QuestionUseCase,
+	topicUseCase usecase.TopicUseCase,
+	levelUseCase usecase.LevelUseCase,
+	auth auth.AuthHandler,
+) *RoutesQuestion {
 	return &RoutesQuestion{
 		questionUseCase: questionUseCase,
+		topicUseCase:    topicUseCase,
+		levelUseCase:    levelUseCase,
 		auth:            auth,
 	}
 }
 
 func (rq *RoutesQuestion) GetQuestionRouter(r *Router) {
-	r.Handle("/questions", rq.auth.AuthMiddleware(http.HandlerFunc(rq.createQuestions))).Methods("POST")
-	r.Handle("/questions", rq.auth.AuthMiddleware(http.HandlerFunc(rq.getAllQuestions))).Methods("GET")
-	r.Handle("/questions", rq.auth.AuthMiddleware(http.HandlerFunc(rq.updateQuestion))).Methods("PATCH")
-	r.Handle("/questions", rq.auth.AuthMiddleware(http.HandlerFunc(rq.deleteQuestion))).Methods("DELETE")
+	// ===== QUESTIONS (TEACHER) =====
+	r.Handle("/questions", rq.auth.AuthWithPerm("TEACHER", rq.createQuestion)).Methods(http.MethodPost)
+	r.Handle("/questions", rq.auth.AuthWithPerm("TEACHER", rq.listQuestions)).Methods(http.MethodGet)
+	r.Handle("/questions", rq.auth.AuthWithPerm("TEACHER", rq.updateQuestion)).Methods(http.MethodPatch)
+	r.Handle("/questions/{id}", rq.auth.AuthWithPerm("TEACHER", rq.deleteQuestion)).Methods(http.MethodDelete)
+
+	// ===== TOPIC (TEACHER) =====
+	r.Handle("/topic", rq.auth.AuthWithPerm("TEACHER", rq.createTopic)).Methods(http.MethodPost)
+	r.Handle("/topic", rq.auth.AuthWithPerm("TEACHER", rq.getAllTopics)).Methods(http.MethodGet)
+	r.Handle("/topic", rq.auth.AuthWithPerm("TEACHER", rq.updateTopic)).Methods(http.MethodPatch)
+	r.Handle("/topic", rq.auth.AuthWithPerm("TEACHER", rq.deleteTopic)).Methods(http.MethodDelete)
+	r.Handle("/topic/reorder", rq.auth.AuthWithPerm("TEACHER", rq.reorderTopics)).Methods(http.MethodPost)
+
+	// ===== LEVEL (TEACHER) =====
+	r.Handle("/level", rq.auth.AuthWithPerm("TEACHER", rq.createLevel)).Methods(http.MethodPost)
+	r.Handle("/level", rq.auth.AuthWithPerm("TEACHER", rq.getAllLevels)).Methods(http.MethodGet)
+	r.Handle("/level", rq.auth.AuthWithPerm("TEACHER", rq.updateLevel)).Methods(http.MethodPatch)
+	r.Handle("/level", rq.auth.AuthWithPerm("TEACHER", rq.deleteLevel)).Methods(http.MethodDelete)
 }
 
-func (r *RoutesQuestion) createQuestions(w http.ResponseWriter, req *http.Request) {
-	userID := req.Context().Value("email_id").(string)
-	fmt.Println("req.Body: ", req.Body)
-	var question entity.Question
-	if err := json.NewDecoder(req.Body).Decode(&question); err != nil {
-		// fmt.Println("question: ", question)
+/* ── QUESTION ─────────────────────────────────────────────────────────── */
 
-		// fmt.Println("err: ", err)
-		// pkg.SendError(w, "Question not created", http.StatusInternalServerError)
-		// return
-	}
-	// Tạo ID mới cho các câu hỏi dựa trên loại câu hỏi
-	switch question.Type {
-	case "fill_in_the_blank":
-		for i := range question.FillInTheBlanks {
-			question.FillInTheBlanks[i].ID = primitive.NewObjectID()
-			fmt.Println(question.FillInTheBlanks[i].ID)
-		}
-	case "match_choice_question":
-		for i := range question.MatchItems {
-			question.MatchItems[i].ID = primitive.NewObjectID()
-		}
-		for i := range question.MatchItems {
-			question.MatchItems[i].ID = primitive.NewObjectID()
-		}
-	case "multiple_choice_question", "single_choice_question", "order_question":
-		for i := range question.Options {
-			question.Options[i].ID = primitive.NewObjectID()
-		}
-	default:
-		fmt.Println("Error: Unknown question type")
-	}
+// paginatedQuestions matches CLAUDE.md E#10: { items, total, page, limit }.
+type paginatedQuestions struct {
+	Items []entity.Question `json:"items"`
+	Total int64             `json:"total"`
+	Page  int64             `json:"page"`
+	Limit int64             `json:"limit"`
+}
 
-	// Add metadata and timestamps
-	question.Metadata.Author = userID
-	// Gán thời gian tạo và cập nhật
-	now := time.Now()
-	fmt.Println(now)
-
-	insertedQuestion, err := r.questionUseCase.CreateQuestion(context.TODO(), &question)
-
-	if err != nil {
-		pkg.SendError(w, "Question not created", http.StatusInternalServerError)
+func (rq *RoutesQuestion) createQuestion(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	// Send a successful response with the inserted ID
-	pkg.SendResponse(w, http.StatusCreated, insertedQuestion)
-}
 
-func (rq *RoutesQuestion) getAllQuestions(w http.ResponseWriter, req *http.Request) {
-	email_id := req.Context().Value("email_id").(string)
-	fmt.Println(email_id)
-	// Parse limit and page from query parameters, default to 50 and 0 if not provided
-	limitParam := req.URL.Query().Get("limit")
-	pageParam := req.URL.Query().Get("page")
-
-	limit, err := strconv.Atoi(limitParam)
-	if err != nil || limit <= 0 {
-		limit = 50 // Default to 50 items per page
-	}
-
-	page, err := strconv.Atoi(pageParam)
-	if err != nil || page < 0 {
-		page = 0 // Default to page 0 if not specified
-	}
-
-	questions, err := rq.questionUseCase.GetAllQuestionsByUser(context.TODO(), email_id, limit, page)
-	if err != nil {
-		pkg.SendError(w, "Failed to get questions", http.StatusInternalServerError)
+	var q entity.Question
+	if err := json.NewDecoder(req.Body).Decode(&q); err != nil {
+		pkg.SendError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	pkg.SendResponse(w, http.StatusOK, questions)
+
+	uuidQuestion, _ := uuid.Parse(userID)
+	q.Metadata.User_ID = uuidQuestion.String()
+	q.ID = primitive.NewObjectID()
+	q.Created_At = time.Now()
+	q.Updated_At = time.Now()
+
+	id, err := rq.questionUseCase.CreateQuestion(context.TODO(), q)
+	if err != nil {
+		if errors.Is(err, usecase.ErrInvalidQuestion) {
+			pkg.SendError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		pkg.SendError(w, "create failed", http.StatusInternalServerError)
+		return
+	}
+
+	q.ID = id
+	pkg.SendResponse(w, http.StatusCreated, q)
 }
 
-func (r *RoutesQuestion) updateQuestion(w http.ResponseWriter, req *http.Request) {
-	emailID := req.Context().Value("email_id").(string)
+func (rq *RoutesQuestion) listQuestions(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	q := req.URL.Query()
+	limit, _ := strconv.ParseInt(q.Get("limit"), 10, 64)
+	page, _ := strconv.ParseInt(q.Get("page"), 10, 64)
 
-	var question entity.Question
-	if err := json.NewDecoder(req.Body).Decode(&question); err != nil {
+	filters := usecase.QuestionFilters{
+		OwnerID: userID,
+		TopicID: q.Get("topic_id"),
+		LevelID: q.Get("level_id"),
+		Type:    q.Get("type"),
+		Search:  q.Get("q"),
+		Page:    page,
+		Limit:   limit,
+	}
+
+	items, total, err := rq.questionUseCase.ListQuestions(context.TODO(), filters)
+	if err != nil {
+		pkg.SendError(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+
+	if filters.Page < 1 {
+		filters.Page = 1
+	}
+	if filters.Limit < 1 || filters.Limit > 100 {
+		filters.Limit = 20
+	}
+	if items == nil {
+		items = []entity.Question{}
+	}
+	pkg.SendResponse(w, http.StatusOK, paginatedQuestions{
+		Items: items,
+		Total: total,
+		Page:  filters.Page,
+		Limit: filters.Limit,
+	})
+}
+
+func (rq *RoutesQuestion) updateQuestion(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var q entity.Question
+	if err := json.NewDecoder(req.Body).Decode(&q); err != nil {
+		pkg.SendError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	uuidQuestion, _ := uuid.Parse(userID)
+	q.Metadata.User_ID = uuidQuestion.String()
+	q.Updated_At = time.Now()
+
+	updated, err := rq.questionUseCase.UpdateQuestion(context.TODO(), q)
+	if err != nil {
 		fmt.Println(err)
-		pkg.SendError(w, "Question not updated", http.StatusInternalServerError)
+
+		if errors.Is(err, usecase.ErrInvalidQuestion) {
+			pkg.SendError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		pkg.SendError(w, "update failed", http.StatusInternalServerError)
 		return
 	}
-	fmt.Println("question: ", question)
-	question.Metadata.Author = emailID
-	switch question.Type {
-	case "fill_in_the_blank":
-		for i, v := range question.FillInTheBlanks {
-			if primitive.NilObjectID == v.ID {
-				question.FillInTheBlanks[i].ID = primitive.NewObjectID()
-			}
-		}
-	case "match_choice_question":
-		for i, v := range question.MatchItems {
-			if primitive.NilObjectID == v.ID {
-				question.MatchItems[i].ID = primitive.NewObjectID()
-			}
-		}
-		for i, v := range question.MatchOptions {
-			if primitive.NilObjectID == v.ID {
-				question.MatchOptions[i].ID = primitive.NewObjectID()
-			}
-		}
 
-	case "multiple_choice_question", "single_choice_question":
-		for i, v := range question.Options {
-			if primitive.NilObjectID == v.ID {
-				question.Options[i].ID = primitive.NewObjectID()
-			}
-		}
-
-	case "order_question":
-		for i, v := range question.OrderItems {
-			if primitive.NilObjectID == v.ID {
-				question.OrderItems[i].ID = primitive.NewObjectID()
-			}
-		}
-
-	default:
-		fmt.Println("Error: Unknown question type")
-	}
-	now := time.Now()
-	question.Updated_At = now
-
-	questionUpdated, err := r.questionUseCase.UpdateQuestion(context.TODO(), &question)
-	if err != nil {
-		pkg.SendError(w, "Failed to update question", http.StatusInternalServerError)
-		return
-	}
-	pkg.SendResponse(w, http.StatusOK, questionUpdated)
-
+	pkg.SendResponse(w, http.StatusOK, updated)
 }
 
 func (rq *RoutesQuestion) deleteQuestion(w http.ResponseWriter, req *http.Request) {
-	emailID := req.Context().Value("email_id").(string)
-	var question entity.Question
-	if err := json.NewDecoder(req.Body).Decode(&question); err != nil {
-		pkg.SendError(w, "Invalid request", http.StatusBadRequest)
-		return
-	}
-	question.Metadata.Author = emailID
-	err := rq.questionUseCase.DeleteQuestion(context.TODO(), &question)
-	if err != nil {
-		pkg.SendError(w, "Failed to delete question", http.StatusInternalServerError)
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	pkg.SendResponse(w, http.StatusOK, question.ID)
+	idHex := mux.Vars(req)["id"]
+	id, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		pkg.SendError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	uuidQuestion, _ := uuid.Parse(userID)
+	q := entity.Question{
+		ID:       id,
+		Metadata: entity.Metadata{User_ID: uuidQuestion.String()},
+	}
+	if err := rq.questionUseCase.DeleteQuestion(context.TODO(), q); err != nil {
+		pkg.SendError(w, "delete failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+/* ── TOPIC ────────────────────────────────────────────────────────────── */
+
+func (rq *RoutesQuestion) createTopic(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var topic entity.Topic
+	if err := json.NewDecoder(req.Body).Decode(&topic); err != nil {
+		pkg.SendError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	topic.UserID = userID
+	result, err := rq.topicUseCase.CreateTopic(context.TODO(), topic)
+	if err != nil {
+		pkg.SendError(w, "create failed", http.StatusInternalServerError)
+		return
+	}
+	pkg.SendResponse(w, http.StatusOK, result)
+}
+
+func (rq *RoutesQuestion) getAllTopics(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	result, err := rq.topicUseCase.GetAllTopics(context.TODO(), userID)
+	if err != nil {
+		pkg.SendError(w, "Query fail", http.StatusInternalServerError)
+		return
+	}
+	pkg.SendResponse(w, http.StatusOK, result)
+}
+
+func (rq *RoutesQuestion) updateTopic(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var topic entity.Topic
+	if err := json.NewDecoder(req.Body).Decode(&topic); err != nil {
+		pkg.SendError(w, "Topic not decode", http.StatusBadRequest)
+		return
+	}
+	topic.UserID = userID
+
+	result, err := rq.topicUseCase.UpdateTopic(context.TODO(), topic)
+	if err != nil {
+		pkg.SendError(w, "Update fail", http.StatusInternalServerError)
+		return
+	}
+	pkg.SendResponse(w, http.StatusOK, result)
+}
+
+func (rq *RoutesQuestion) reorderTopics(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var payload struct {
+		OrderedIDs []string `json:"ordered_ids"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		pkg.SendError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if len(payload.OrderedIDs) == 0 {
+		pkg.SendError(w, "ordered_ids required", http.StatusBadRequest)
+		return
+	}
+	if err := rq.topicUseCase.ReorderTopics(req.Context(), userID, payload.OrderedIDs); err != nil {
+		pkg.SendError(w, "reorder failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (rq *RoutesQuestion) deleteTopic(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var payload struct {
+		ID string `json:"_id"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		pkg.SendError(w, "Topic not decode", http.StatusBadRequest)
+		return
+	}
+	topicID, err := primitive.ObjectIDFromHex(payload.ID)
+	if err != nil {
+		pkg.SendError(w, "Invalid topic id", http.StatusBadRequest)
+		return
+	}
+	topic := entity.Topic{ID: topicID, UserID: userID}
+	if err := rq.topicUseCase.DeleteTopic(req.Context(), topic); err != nil {
+		pkg.SendError(w, "Topic not deleted", http.StatusInternalServerError)
+		return
+	}
+	pkg.SendResponse(w, http.StatusOK, map[string]string{
+		"message": "Topic deleted successfully",
+	})
+}
+
+/* ── LEVEL ────────────────────────────────────────────────────────────── */
+
+func (rq *RoutesQuestion) createLevel(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var level entity.Level
+	if err := json.NewDecoder(req.Body).Decode(&level); err != nil {
+		pkg.SendError(w, "Level not decode", http.StatusBadRequest)
+		return
+	}
+	level.UserID = userID
+
+	result, err := rq.levelUseCase.CreateLevel(context.TODO(), level)
+	if err != nil {
+		pkg.SendError(w, "Level not created", http.StatusInternalServerError)
+		return
+	}
+	level.ID = result
+	pkg.SendResponse(w, http.StatusOK, level)
+}
+
+func (rq *RoutesQuestion) getAllLevels(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	result, err := rq.levelUseCase.GetAllLevels(context.TODO(), userID)
+	if err != nil {
+		pkg.SendError(w, "Query fail", http.StatusInternalServerError)
+		return
+	}
+	pkg.SendResponse(w, http.StatusOK, result)
+}
+
+func (rq *RoutesQuestion) updateLevel(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var level entity.Level
+	if err := json.NewDecoder(req.Body).Decode(&level); err != nil {
+		pkg.SendError(w, "Level not decode", http.StatusBadRequest)
+		return
+	}
+	level.UserID = userID
+
+	result, err := rq.levelUseCase.UpdateLevel(context.TODO(), level)
+	if err != nil {
+		pkg.SendError(w, "Level not update", http.StatusInternalServerError)
+		return
+	}
+	pkg.SendResponse(w, http.StatusOK, result)
+}
+
+func (rq *RoutesQuestion) deleteLevel(w http.ResponseWriter, req *http.Request) {
+	userID, ok := utils.GetStringFromCtx(req.Context(), constant.CtxUserID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var payload struct {
+		ID string `json:"_id"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		pkg.SendError(w, "Level not decode", http.StatusBadRequest)
+		return
+	}
+	levelID, err := primitive.ObjectIDFromHex(payload.ID)
+	if err != nil {
+		pkg.SendError(w, "Invalid Level id", http.StatusBadRequest)
+		return
+	}
+	level := entity.Level{ID: levelID, UserID: userID}
+	if err := rq.levelUseCase.DeleteLevel(req.Context(), level); err != nil {
+		pkg.SendError(w, "Level not deleted", http.StatusInternalServerError)
+		return
+	}
+	pkg.SendResponse(w, http.StatusOK, map[string]string{
+		"message": "Level deleted successfully",
+	})
 }
