@@ -49,8 +49,10 @@ func InitRouter() {
 	}
 	redisUseCase := usecase.NewRedisUseCase(redisRepo)
 
-	authUseCase := auth.NewAuthUseCase(os.Getenv("AUTH_SERVICE_URL"))
+	authServiceURL := os.Getenv("AUTH_SERVICE_URL")
+	authUseCase := auth.NewAuthUseCase(authServiceURL)
 	authHandler := auth.NewAuthHandler(authUseCase)
+	userUseCase := usecase.NewUserUseCase(authServiceURL)
 
 	// Repositories
 	questionRepo := persistence.NewQuestionMongoRepository()
@@ -64,13 +66,13 @@ func InitRouter() {
 	submissionRepo := persistence.NewSubmissionMongoRepository()
 
 	// Use cases
-	questionUseCase := usecase.NewQuestionUseCase(questionRepo)
-	topicUseCase := usecase.NewTopicUseCase(topicRepo)
-	levelUseCase := usecase.NewLevelUseCase(levelRepo)
+	questionUseCase := usecase.NewQuestionUseCase(questionRepo, testTemplateRepo, testOfClassRepo)
+	topicUseCase := usecase.NewTopicUseCase(topicRepo, questionRepo)
+	levelUseCase := usecase.NewLevelUseCase(levelRepo, questionRepo)
 
 	classUseCase := usecase.NewClassUseCase(classRepo, testOfClassRepo)
 	testTemplateUseCase := usecase.NewTestTemplateUseCase(testTemplateRepo)
-	testOfClassUseCase := usecase.NewTestOfClassUseCase(testOfClassRepo)
+	testOfClassUseCase := usecase.NewTestOfClassUseCase(testOfClassRepo, submissionRepo)
 	fileUseCase := usecase.NewFileUseCase(fileRepo)
 
 	pdfService := usecase.NewPDFService()
@@ -84,6 +86,8 @@ func InitRouter() {
 	routes.NewRouterClass(*classUseCase, *redisUseCase, *authHandler).GetClassRouter(router)
 	routes.NewRoutesFile(fileUseCase, awsS3UseCase, authHandler).GetRoutesFile(router)
 	routes.NewRouterSubmission(submissionUseCase, testTemplateUseCase, questionUseCase, redisUseCase, authHandler).GetSubmissionRouter(router)
+	routes.NewRouterUser(*userUseCase, *authHandler).GetUserRouter(router)
+	routes.NewRouterAdmin(*userUseCase, *authHandler).GetAdminRouter(router)
 
 	handler := c.Handler(router)
 	router.HandleFunc("/", homeHandler).Methods("GET")

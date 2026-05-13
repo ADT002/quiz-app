@@ -198,7 +198,19 @@ func (rq *RoutesQuestion) deleteQuestion(w http.ResponseWriter, req *http.Reques
 		ID:       id,
 		Metadata: entity.Metadata{User_ID: uuidQuestion.String()},
 	}
-	if err := rq.questionUseCase.DeleteQuestion(context.TODO(), q); err != nil {
+	force := req.URL.Query().Get("force") == "true"
+	usage, err := rq.questionUseCase.DeleteQuestion(req.Context(), q, force)
+	if err != nil {
+		if errors.Is(err, usecase.ErrQuestionInUse) {
+			// 409: tell FE where the question is still referenced so it can
+			// show a confirm modal that retries with ?force=true.
+			pkg.SendResponse(w, http.StatusConflict, map[string]any{
+				"code":    "QUESTION_IN_USE",
+				"message": "câu hỏi đang được sử dụng trong bài thi",
+				"usage":   usage,
+			})
+			return
+		}
 		pkg.SendError(w, "delete failed", http.StatusInternalServerError)
 		return
 	}
@@ -310,6 +322,13 @@ func (rq *RoutesQuestion) deleteTopic(w http.ResponseWriter, req *http.Request) 
 	}
 	topic := entity.Topic{ID: topicID, UserID: userID}
 	if err := rq.topicUseCase.DeleteTopic(req.Context(), topic); err != nil {
+		if errors.Is(err, usecase.ErrTopicInUse) {
+			pkg.SendResponse(w, http.StatusConflict, map[string]any{
+				"code":    "TOPIC_IN_USE",
+				"message": "chủ đề đang được gán cho câu hỏi, không thể xoá",
+			})
+			return
+		}
 		pkg.SendError(w, "Topic not deleted", http.StatusInternalServerError)
 		return
 	}
@@ -397,6 +416,13 @@ func (rq *RoutesQuestion) deleteLevel(w http.ResponseWriter, req *http.Request) 
 	}
 	level := entity.Level{ID: levelID, UserID: userID}
 	if err := rq.levelUseCase.DeleteLevel(req.Context(), level); err != nil {
+		if errors.Is(err, usecase.ErrLevelInUse) {
+			pkg.SendResponse(w, http.StatusConflict, map[string]any{
+				"code":    "LEVEL_IN_USE",
+				"message": "độ khó đang được gán cho câu hỏi, không thể xoá",
+			})
+			return
+		}
 		pkg.SendError(w, "Level not deleted", http.StatusInternalServerError)
 		return
 	}

@@ -2,19 +2,25 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	entity "quiz-app/internal/domain/entity"
 	"quiz-app/internal/domain/repository"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+// ErrLevelInUse blocks deleting a level still referenced by any question.
+var ErrLevelInUse = errors.New("level is referenced by a question")
+
 type LevelUseCase struct {
-	LevelRepo repository.LevelRepository
+	LevelRepo    repository.LevelRepository
+	QuestionRepo repository.QuestionRepository
 }
 
-func NewLevelUseCase(tr repository.LevelRepository) *LevelUseCase {
+func NewLevelUseCase(lr repository.LevelRepository, qr repository.QuestionRepository) *LevelUseCase {
 	return &LevelUseCase{
-		LevelRepo: tr,
+		LevelRepo:    lr,
+		QuestionRepo: qr,
 	}
 }
 
@@ -34,8 +40,15 @@ func (uc *LevelUseCase) UpdateLevel(ctx context.Context, level entity.Level) (en
 	return uc.LevelRepo.UpdateLevel(ctx, level)
 }
 
-// GetLevelByID retrieves a Level by its ID
+// DeleteLevel blocks delete if any question still references the level.
 func (uc *LevelUseCase) DeleteLevel(ctx context.Context, level entity.Level) error {
+	n, err := uc.QuestionRepo.CountByLevel(ctx, level.UserID, level.ID)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrLevelInUse
+	}
 	return uc.LevelRepo.DeleteLevel(ctx, level)
 }
 

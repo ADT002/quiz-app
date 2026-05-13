@@ -29,4 +29,18 @@ type TestTemplateRepository interface {
 		ctx context.Context,
 		userID string,
 		id primitive.ObjectID) error
+
+	// CountUsingQuestion returns how many of ownerID's test templates have
+	// questionID in their question_ids array.
+	CountUsingQuestion(
+		ctx context.Context,
+		ownerID string,
+		questionID primitive.ObjectID) (int64, error)
+
+	// PullQuestionFromAll removes questionID from question_ids in every
+	// test template owned by ownerID. Returns number of docs modified.
+	PullQuestionFromAll(
+		ctx context.Context,
+		ownerID string,
+		questionID primitive.ObjectID) (int64, error)
 }

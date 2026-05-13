@@ -2,6 +2,9 @@ package persistence
 
 import (
 	"context"
+	"strings"
+	"time"
+
 	entity "quiz-app/internal/domain/entity"
 	"quiz-app/internal/domain/repository"
 
@@ -17,8 +20,34 @@ type SubmissionMongoRepository struct {
 func NewSubmissionMongoRepository() repository.SubmissionRepository {
 	client := GetMongoClient()
 	return &SubmissionMongoRepository{
-		Collection: client.Database("dbapp").Collection("classes"),
+		Collection: client.Database("dbapp").Collection("submissions"),
 	}
+}
+
+func (ar *SubmissionMongoRepository) ListFinishedSubmissionsForClass(
+	ctx context.Context,
+	classID primitive.ObjectID,
+) ([]entity.FinishedSubmissionRow, error) {
+	cur, err := ar.Collection.Find(ctx, bson.M{
+		"class_id": classID,
+		"status": bson.M{
+			"$in": bson.A{"submitted", "auto_submitted"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	var out []entity.FinishedSubmissionRow
+	for cur.Next(ctx) {
+		var row entity.FinishedSubmissionRow
+		if err := cur.Decode(&row); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, cur.Err()
 }
 
 func (ar *SubmissionMongoRepository) ExportData(
@@ -26,223 +55,150 @@ func (ar *SubmissionMongoRepository) ExportData(
 	classID primitive.ObjectID,
 	testID primitive.ObjectID,
 ) (*entity.ClassExport, error) {
+	client := GetMongoClient()
+	db := client.Database("dbapp")
 
-	pipeline := mongo.Pipeline{
-
-		// 1. Match class
-		{{Key: "$match", Value: bson.M{"_id": classID}}},
-
-		// 2. Unwind test
-		{{Key: "$unwind", Value: "$test"}},
-
-		// 3. Match test
-		{{Key: "$match", Value: bson.M{"test.id": testID}}},
-
-		// 4. Collect submitted user_ids
-		{{Key: "$addFields", Value: bson.M{
-			"submitted_user_ids": bson.M{
-				"$map": bson.M{
-					"input": "$test.user_submit",
-					"as":    "u",
-					"in":    "$$u.user_id",
-				},
-			},
-		}}},
-
-		// 4.1 Map students_accept -> user_ids
-		{{Key: "$addFields", Value: bson.M{
-			"students_accept_user_ids": bson.M{
-				"$map": bson.M{
-					"input": "$students_accept",
-					"as":    "s",
-					"in":    "$$s.user_id",
-				},
-			},
-		}}},
-
-		// 5. Compute unsubmitted user_ids
-		{{Key: "$addFields", Value: bson.M{
-			"unsubmitted_user_ids": bson.M{
-				"$setDifference": bson.A{
-					"$students_accept_user_ids",
-					"$submitted_user_ids",
-				},
-			},
-		}}},
-
-		// ================= SUBMITTED =================
-
-		{{Key: "$unwind", Value: bson.M{
-			"path":                       "$test.user_submit",
-			"preserveNullAndEmptyArrays": true,
-		}}},
-
-		{{Key: "$lookup", Value: bson.M{
-			"from":         "users",
-			"localField":   "test.user_submit.user_id",
-			"foreignField": "user_id",
-			"as":           "user",
-		}}},
-		{{Key: "$unwind", Value: bson.M{
-			"path":                       "$user",
-			"preserveNullAndEmptyArrays": true,
-		}}},
-
-		{{Key: "$lookup", Value: bson.M{
-			"from": "submissions",
-			"let": bson.M{
-				"class_id": "$_id",
-				"test_id":  "$test.id",
-				"user_id":  "$test.user_submit.user_id",
-			},
-			"pipeline": bson.A{
-				bson.M{
-					"$match": bson.M{
-						"$expr": bson.M{
-							"$and": bson.A{
-								bson.M{"$eq": bson.A{"$class_id", "$$class_id"}},
-								bson.M{"$eq": bson.A{"$test_id", "$$test_id"}},
-								bson.M{"$eq": bson.A{"$user_id", "$$user_id"}},
-							},
-						},
-					},
-				},
-			},
-			"as": "submission",
-		}}},
-		{{Key: "$unwind", Value: bson.M{
-			"path":                       "$submission",
-			"preserveNullAndEmptyArrays": true,
-		}}},
-
-		// ================= GROUP =================
-
-		{{Key: "$group", Value: bson.M{
-			"_id": nil,
-
-			"class": bson.M{"$first": bson.M{
-				"id":         "$_id",
-				"class_name": "$class_name",
-			}},
-
-			"test": bson.M{"$first": bson.M{
-				"_id":              "$test.id",
-				"test_name":        "$test.test_name",
-				"descript":         "$test.descript",
-				"start_time":       "$test.start_time",
-				"end_time":         "$test.end_time",
-				"duration_minutes": "$test.duration_minutes",
-				"user_id":          "$test.user_id",
-				"author_mail":      "$test.author_mail",
-				"test_score":       "$test.test_score",
-			}},
-
-			"submitted_users": bson.M{
-				"$push": bson.M{
-					"$cond": bson.A{
-						bson.M{"$ne": bson.A{"$user", nil}},
-						bson.M{
-							"email":      "$user.email",
-							"user_id":    "$user.user_id",
-							"first_name": "$user.first_name",
-							"last_name":  "$user.last_name",
-							"score":      bson.M{"$ifNull": bson.A{"$submission.score", 0}},
-							"start_time": "$submission.start_time",
-							"end_time":   "$submission.end_time",
-							"submitted":  true,
-						},
-						"$$REMOVE",
-					},
-				},
-			},
-
-			"unsubmitted_user_ids": bson.M{"$first": "$unsubmitted_user_ids"},
-		}}},
-
-		// 12. Lookup unsubmitted users
-		{{Key: "$lookup", Value: bson.M{
-			"from": "users",
-			"let":  bson.M{"ids": "$unsubmitted_user_ids"},
-			"pipeline": bson.A{
-				bson.M{
-					"$match": bson.M{
-						"$expr": bson.M{
-							"$in": bson.A{"$user_id", "$$ids"},
-						},
-					},
-				},
-			},
-			"as": "unsubmitted_users",
-		}}},
-
-		// 13. Normalize unsubmitted users
-		{{Key: "$addFields", Value: bson.M{
-			"unsubmitted_users": bson.M{
-				"$map": bson.M{
-					"input": "$unsubmitted_users",
-					"as":    "u",
-					"in": bson.M{
-						"email":      "$$u.email",
-						"user_id":    "$$u.user_id",
-						"first_name": "$$u.first_name",
-						"last_name":  "$$u.last_name",
-						"score":      0,
-						"submitted":  false,
-					},
-				},
-			},
-		}}},
-
-		// 14. Merge users
-		{{Key: "$addFields", Value: bson.M{
-			"users": bson.M{
-				"$concatArrays": bson.A{
-					"$submitted_users",
-					"$unsubmitted_users",
-				},
-			},
-		}}},
-
-		// 15. Final shape
-		{{Key: "$project", Value: bson.M{
-			"_id":   0,
-			"class": 1,
-			"test":  1,
-			"users": 1,
-		}}},
+	var toc entity.TestOfClass
+	err := db.Collection("test_of_class").FindOne(ctx, bson.M{
+		"_id":      testID,
+		"class_id": classID,
+	}).Decode(&toc)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
 	}
 
-	cursor, err := ar.Collection.Aggregate(ctx, pipeline)
+	var cls entity.Class
+	if err := db.Collection("classes").FindOne(ctx, bson.M{"_id": classID}).Decode(&cls); err != nil {
+		return nil, err
+	}
+
+	cur, err := ar.Collection.Find(ctx, bson.M{
+		"test_of_class_id": testID,
+		"class_id":         classID,
+		"status": bson.M{
+			"$in": bson.A{"submitted", "auto_submitted"},
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer cur.Close(ctx)
 
-	var raw []struct {
-		Class struct {
-			ID        primitive.ObjectID `bson:"id"`
-			ClassName string             `bson:"class_name"`
-		} `bson:"class"`
+	submittedStudent := make(map[string]bool)
+	var submittedUsers []entity.ExportUserSubmission
 
-		Test entity.ExportTest `bson:"test"`
+	for cur.Next(ctx) {
+		var s struct {
+			StudentID   string     `bson:"student_id"`
+			Email       string     `bson:"email"`
+			Score       float64    `bson:"score"`
+			StartedAt   *time.Time `bson:"started_at,omitempty"`
+			SubmittedAt *time.Time `bson:"submitted_at,omitempty"`
+		}
+		if err := cur.Decode(&s); err != nil {
+			return nil, err
+		}
+		submittedStudent[s.StudentID] = true
 
-		Users []entity.ExportUserSubmission `bson:"users"`
+		fn, ln := nameFromClassRoster(cls, s.StudentID)
+		em := strings.TrimSpace(s.Email)
+		if em == "" {
+			em = s.StudentID
+		}
+
+		submittedUsers = append(submittedUsers, entity.ExportUserSubmission{
+			Email:     em,
+			UserID:    s.StudentID,
+			FirstName: fn,
+			LastName:  ln,
+			Score:     s.Score,
+			Submitted: true,
+			StartTime: s.StartedAt,
+			EndTime:   s.SubmittedAt,
+		})
 	}
-
-	if err := cursor.All(ctx, &raw); err != nil {
+	if err := cur.Err(); err != nil {
 		return nil, err
 	}
 
-	if len(raw) == 0 {
-		return nil, nil
+	var unsubmitted []entity.ExportUserSubmission
+	for _, st := range cls.StudentsAccept {
+		if submittedStudent[st.StudentID] {
+			continue
+		}
+		fn, ln := splitDisplayName(st.StudentName)
+		em := strings.TrimSpace(st.StudentEmail)
+		if em == "" {
+			em = st.StudentID
+		}
+		unsubmitted = append(unsubmitted, entity.ExportUserSubmission{
+			Email:     em,
+			UserID:    st.StudentID,
+			FirstName: fn,
+			LastName:  ln,
+			Score:     0,
+			Submitted: false,
+		})
 	}
 
-	result := &entity.ClassExport{
-		ClassID:   raw[0].Class.ID,
-		ClassName: raw[0].Class.ClassName,
-		Test:      raw[0].Test,
-	}
-	result.Test.Users = raw[0].Users
+	all := append(append([]entity.ExportUserSubmission{}, submittedUsers...), unsubmitted...)
 
-	return result, nil
+	return &entity.ClassExport{
+		ClassID:   classID,
+		ClassName: cls.ClassName,
+		Test: entity.ExportTest{
+			TestID:          testID,
+			TestName:        toc.TestName,
+			Description:     toc.Descript,
+			StartTime:       parseExportTime(toc.StartTime),
+			EndTime:         parseExportTime(toc.EndTime),
+			DurationMinutes: toc.DurationMinutes,
+			TestScore:       float64(toc.TestScore),
+			AuthorMail:      toc.AuthorMail,
+			Users:           all,
+		},
+	}, nil
+}
+
+func nameFromClassRoster(cls entity.Class, userID string) (first, last string) {
+	for _, st := range cls.StudentsAccept {
+		if st.StudentID == userID {
+			return splitDisplayName(st.StudentName)
+		}
+	}
+	return "", ""
+}
+
+func splitDisplayName(full string) (first, last string) {
+	full = strings.TrimSpace(full)
+	if full == "" {
+		return "", ""
+	}
+	parts := strings.Fields(full)
+	if len(parts) == 1 {
+		return parts[0], ""
+	}
+	return parts[0], strings.Join(parts[1:], " ")
+}
+
+func parseExportTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	layouts := []string{
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+	}
+	for _, ly := range layouts {
+		if t, err := time.Parse(ly, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }

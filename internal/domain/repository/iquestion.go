@@ -41,4 +41,17 @@ type QuestionRepository interface {
 	GetAllQuestions(
 		ctx context.Context,
 		question_ids []primitive.ObjectID) ([]entity.Question, error)
+
+	// CountByTopic returns how many of ownerID's questions reference topicID.
+	// Used to block deleting a topic that is still in use.
+	CountByTopic(
+		ctx context.Context,
+		ownerID string,
+		topicID primitive.ObjectID) (int64, error)
+
+	// CountByLevel returns how many of ownerID's questions reference levelID.
+	CountByLevel(
+		ctx context.Context,
+		ownerID string,
+		levelID primitive.ObjectID) (int64, error)
 }

@@ -6,6 +6,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 
 	entity "quiz-app/internal/domain/entity"
 	"quiz-app/internal/domain/repository"
@@ -13,12 +14,15 @@ import (
 
 type TestTemplateMongoRepository struct {
 	CollRepo repository.CRUDMongoDB[entity.TestTemplete]
+	coll     *mongo.Collection
 }
 
 func NewTestTemplateMongoRepository() repository.TestTemplateRepository {
 	collRepo := NewCollRepository[entity.TestTemplete]("dbapp", "test_templates")
+	coll := GetMongoClient().Database("dbapp").Collection("test_templates")
 	return &TestTemplateMongoRepository{
 		CollRepo: collRepo,
+		coll:     coll,
 	}
 }
 
@@ -59,6 +63,37 @@ func (r *TestTemplateMongoRepository) UpdateTestTemplate(ctx context.Context, te
 		return entity.TestTemplete{}, fmt.Errorf("failed to update test template: %w", err)
 	}
 	return test, nil
+}
+
+// CountUsingQuestion counts owner's test templates whose question_ids contains
+// the hex form of questionID. question_ids is stored as []string per BaseTest.
+func (r *TestTemplateMongoRepository) CountUsingQuestion(
+	ctx context.Context,
+	ownerID string,
+	questionID primitive.ObjectID,
+) (int64, error) {
+	return r.coll.CountDocuments(ctx, bson.M{
+		"user_id":      ownerID,
+		"question_ids": questionID.Hex(),
+	})
+}
+
+// PullQuestionFromAll $pull the question hex id from every owner's template.
+// Returns ModifiedCount; not finding any doc is not an error.
+func (r *TestTemplateMongoRepository) PullQuestionFromAll(
+	ctx context.Context,
+	ownerID string,
+	questionID primitive.ObjectID,
+) (int64, error) {
+	res, err := r.coll.UpdateMany(
+		ctx,
+		bson.M{"user_id": ownerID, "question_ids": questionID.Hex()},
+		bson.M{"$pull": bson.M{"question_ids": questionID.Hex()}},
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.ModifiedCount, nil
 }
 
 func (r *TestTemplateMongoRepository) DeleteTestTemplate(ctx context.Context, userID string, id primitive.ObjectID) error {

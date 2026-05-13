@@ -6,6 +6,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 
 	entity "quiz-app/internal/domain/entity"
 	"quiz-app/internal/domain/repository"
@@ -13,12 +14,15 @@ import (
 
 type TestOfClassMongoRepository struct {
 	CollRepo repository.CRUDMongoDB[entity.TestOfClass]
+	coll     *mongo.Collection
 }
 
 func NewTestOfClassMongoRepository() repository.TestOfClassRepository {
 	collRepo := NewCollRepository[entity.TestOfClass]("dbapp", "test_of_class")
+	coll := GetMongoClient().Database("dbapp").Collection("test_of_class")
 	return &TestOfClassMongoRepository{
 		CollRepo: collRepo,
+		coll:     coll,
 	}
 }
 
@@ -71,6 +75,35 @@ func (r *TestOfClassMongoRepository) UpdateTestOfClass(ctx context.Context, test
 		return entity.TestOfClass{}, fmt.Errorf("failed to update test of class: %w", err)
 	}
 	return test, nil
+}
+
+// CountUsingQuestion counts owner's test_of_class docs whose question_ids
+// contain questionID (stored as hex string per BaseTest.QuestionIDs).
+func (r *TestOfClassMongoRepository) CountUsingQuestion(
+	ctx context.Context,
+	ownerID string,
+	questionID primitive.ObjectID,
+) (int64, error) {
+	return r.coll.CountDocuments(ctx, bson.M{
+		"user_id":      ownerID,
+		"question_ids": questionID.Hex(),
+	})
+}
+
+func (r *TestOfClassMongoRepository) PullQuestionFromAll(
+	ctx context.Context,
+	ownerID string,
+	questionID primitive.ObjectID,
+) (int64, error) {
+	res, err := r.coll.UpdateMany(
+		ctx,
+		bson.M{"user_id": ownerID, "question_ids": questionID.Hex()},
+		bson.M{"$pull": bson.M{"question_ids": questionID.Hex()}},
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.ModifiedCount, nil
 }
 
 func (r *TestOfClassMongoRepository) DeleteTestOfClass(ctx context.Context, userID string, id primitive.ObjectID) error {

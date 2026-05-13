@@ -12,11 +12,16 @@ import (
 
 type TestOfClassUseCase struct {
 	TestOfClassRepo repository.TestOfClassRepository
+	Submissions     repository.SubmissionRepository
 }
 
-func NewTestOfClassUseCase(repo repository.TestOfClassRepository) *TestOfClassUseCase {
+func NewTestOfClassUseCase(
+	repo repository.TestOfClassRepository,
+	submissions repository.SubmissionRepository,
+) *TestOfClassUseCase {
 	return &TestOfClassUseCase{
 		TestOfClassRepo: repo,
+		Submissions:     submissions,
 	}
 }
 
@@ -25,7 +30,33 @@ func (uc *TestOfClassUseCase) CreateTestOfClass(ctx context.Context, test entity
 }
 
 func (uc *TestOfClassUseCase) GetTestsOfClass(ctx context.Context, classID primitive.ObjectID) ([]entity.TestOfClass, error) {
-	return uc.TestOfClassRepo.GetTestsOfClass(ctx, classID)
+	tests, err := uc.TestOfClassRepo.GetTestsOfClass(ctx, classID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := uc.Submissions.ListFinishedSubmissionsForClass(ctx, classID)
+	if err != nil {
+		return nil, err
+	}
+	byTest := make(map[primitive.ObjectID][]entity.TestOfClassUserSubmit)
+	for _, r := range rows {
+		em := r.Email
+		if em == "" {
+			em = r.StudentID
+		}
+		byTest[r.TestOfClassID] = append(byTest[r.TestOfClassID], entity.TestOfClassUserSubmit{
+			UserEmail:    em,
+			Score:        r.Score,
+			EmailID:      r.StudentID,
+			SubmissionID: r.SubmissionID.Hex(),
+		})
+	}
+	for i := range tests {
+		if list := byTest[tests[i].ID]; len(list) > 0 {
+			tests[i].UserSubmit = list
+		}
+	}
+	return tests, nil
 }
 
 func (uc *TestOfClassUseCase) GetTestOfClassByID(ctx context.Context, testID string) (entity.TestOfClass, error) {

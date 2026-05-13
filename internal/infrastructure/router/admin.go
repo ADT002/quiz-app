@@ -9,51 +9,66 @@ import (
 	"quiz-app/internal/domain/usecase"
 
 	"quiz-app/internal/pkg"
+
+	"github.com/gorilla/mux"
 )
 
 type RouterAdmin struct {
 	auth         auth.AuthHandler
 	AdminUseCase usecase.UserUseCase
-	redisUseCase usecase.RedisUseCase
-}
-type UpdatePermissionRequest struct {
-	AdminID    string   `json:"userId"`
-	Permission []string `json:"permission"`
 }
 
-func NewRouterAdmin(UserUC usecase.UserUseCase, redisUC usecase.RedisUseCase, auth auth.AuthHandler) *RouterAdmin {
+func NewRouterAdmin(userUC usecase.UserUseCase, auth auth.AuthHandler) *RouterAdmin {
 	return &RouterAdmin{
 		auth:         auth,
-		AdminUseCase: UserUC,
-		redisUseCase: redisUC,
+		AdminUseCase: userUC,
 	}
 }
 
 func (rc RouterAdmin) getAllUser(w http.ResponseWriter, req *http.Request) {
-	users, err := rc.AdminUseCase.GetAllUser(req.Context())
-
-	if err != nil {
-		pkg.SendError(w, "Failed to retrieve Admines", http.StatusInternalServerError)
+	token, ok := bearerToken(req)
+	if !ok {
+		pkg.SendError(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
+	q := req.URL.Query()
+	page := usecase.ParseIntDefault(q.Get("page"), 1)
+	limit := usecase.ParseIntDefault(q.Get("limit"), 20)
+
+	users, err := rc.AdminUseCase.ListUsers(req.Context(), token, page, limit)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
 	pkg.SendResponse(w, http.StatusOK, users)
 }
 
 func (rc RouterAdmin) updateUser(w http.ResponseWriter, req *http.Request) {
-	var reqBody entity.User
-	if err := json.NewDecoder(req.Body).Decode(&reqBody); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
+	token, ok := bearerToken(req)
+	if !ok {
+		pkg.SendError(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	updatedAdmin, err := rc.AdminUseCase.UpdateUser(req.Context(), reqBody)
+	id := mux.Vars(req)["id"]
+	if id == "" {
+		pkg.SendError(w, "missing user id", http.StatusBadRequest)
+		return
+	}
+
+	var body entity.AdminUpdateUserRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		pkg.SendError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	user, err := rc.AdminUseCase.AdminUpdateUser(req.Context(), token, id, body)
 	if err != nil {
-		pkg.SendError(w, "Failed to update User", http.StatusInternalServerError)
+		writeUpstreamError(w, err)
 		return
 	}
-
-	pkg.SendResponse(w, http.StatusOK, updatedAdmin)
+	pkg.SendResponse(w, http.StatusOK, user)
 }
 
 func (rc RouterAdmin) GetAdminRouter(r *Router) {
@@ -64,25 +79,14 @@ func (rc RouterAdmin) GetAdminRouter(r *Router) {
 				http.HandlerFunc(rc.getAllUser),
 			),
 		),
-	).Methods("GET")
+	).Methods(http.MethodGet)
 
-	// UPDATE USER - ADMIN
 	r.Router.Handle(
-		"/user",
+		"/user/{id}",
 		rc.auth.AuthMiddleware(
 			rc.auth.RequirePermission("ADMIN")(
 				http.HandlerFunc(rc.updateUser),
 			),
 		),
-	).Methods("PATCH")
-
-	// // DELETE USER - ADMIN
-	// r.Router.Handle(
-	// 	"/user",
-	// 	rc.auth.AuthMiddleware(
-	// 		rc.auth.RequirePermission("ADMIN")(
-	// 			http.HandlerFunc(rc.deleteAdmin),
-	// 		),
-	// 	),
-	// ).Methods("DELETE")
+	).Methods(http.MethodPatch)
 }

@@ -2,19 +2,25 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	entity "quiz-app/internal/domain/entity"
 	"quiz-app/internal/domain/repository"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+// ErrTopicInUse blocks deleting a topic still referenced by any question.
+var ErrTopicInUse = errors.New("topic is referenced by a question")
+
 type TopicUseCase struct {
-	TopicRepo repository.TopicRepository
+	TopicRepo    repository.TopicRepository
+	QuestionRepo repository.QuestionRepository
 }
 
-func NewTopicUseCase(tr repository.TopicRepository) *TopicUseCase {
+func NewTopicUseCase(tr repository.TopicRepository, qr repository.QuestionRepository) *TopicUseCase {
 	return &TopicUseCase{
-		TopicRepo: tr,
+		TopicRepo:    tr,
+		QuestionRepo: qr,
 	}
 }
 
@@ -33,8 +39,15 @@ func (uc *TopicUseCase) UpdateTopic(ctx context.Context, t entity.Topic) (entity
 	return uc.TopicRepo.UpdateTopic(ctx, t)
 }
 
-// GetTopicByID retrieves a Topic by its ID
+// DeleteTopic blocks delete if any question still references the topic.
 func (uc *TopicUseCase) DeleteTopic(ctx context.Context, t entity.Topic) error {
+	n, err := uc.QuestionRepo.CountByTopic(ctx, t.UserID, t.ID)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrTopicInUse
+	}
 	return uc.TopicRepo.DeleteTopic(ctx, t)
 }
 

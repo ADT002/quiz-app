@@ -37,6 +37,15 @@ type BaseTest struct {
 
 // ================= MAIN ENTITIES =================
 
+// TestOfClassUserSubmit là bản tóm tắt bài đã nộp (đọc từ collection `submissions` do NestJS ghi).
+// Không lưu trong document `test_of_class`; chỉ gắn khi GET list cho giáo viên.
+type TestOfClassUserSubmit struct {
+	UserEmail    string  `json:"user_email"`
+	Score        float64 `json:"score"`
+	EmailID      string  `json:"email_id"`
+	SubmissionID string  `json:"submission_id,omitempty"`
+}
+
 type TestOfClass struct {
 	ID         primitive.ObjectID `json:"_id,omitempty" bson:"_id"`
 	UserID     string             `json:"user_id,omitempty" bson:"user_id,omitempty"`
@@ -44,6 +53,18 @@ type TestOfClass struct {
 	AuthorMail string             `json:"author_mail" bson:"author_mail"`
 
 	BaseTest `bson:",inline"`
+
+	UserSubmit []TestOfClassUserSubmit `json:"user_submit,omitempty" bson:"-"`
+}
+
+// FinishedSubmissionRow — một dòng đọc từ Mongo `submissions` (camelCase từ Nest/Mongoose).
+type FinishedSubmissionRow struct {
+	TestOfClassID primitive.ObjectID `bson:"test_of_class_id"`
+	SubmissionID  primitive.ObjectID `bson:"_id"`
+	StudentID     string             `bson:"student_id"`
+	Email         string             `bson:"email"`
+	Score         float64            `bson:"score"`
+	Status        string             `bson:"status"`
 }
 
 type TestTemplete struct {

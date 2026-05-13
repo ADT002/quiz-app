@@ -25,12 +25,34 @@ const (
 // ErrInvalidQuestion is returned when validation fails. Handler maps to 400.
 var ErrInvalidQuestion = errors.New("invalid question")
 
-type QuestionUseCase struct {
-	QuestionRepo repository.QuestionRepository
+// ErrQuestionInUse is returned when delete is attempted on a question still
+// referenced by a test template or test_of_class. Handler maps to 409 unless
+// caller passed force=true (then DeleteQuestionForce cascades).
+var ErrQuestionInUse = errors.New("question is referenced by a test")
+
+// QuestionUsage describes where a question is still referenced.
+// Returned alongside ErrQuestionInUse so FE can show counts in the confirm UI.
+type QuestionUsage struct {
+	TestTemplates int64 `json:"test_templates"`
+	TestOfClass   int64 `json:"test_of_class"`
 }
 
-func NewQuestionUseCase(tr repository.QuestionRepository) *QuestionUseCase {
-	return &QuestionUseCase{QuestionRepo: tr}
+type QuestionUseCase struct {
+	QuestionRepo     repository.QuestionRepository
+	TestTemplateRepo repository.TestTemplateRepository
+	TestOfClassRepo  repository.TestOfClassRepository
+}
+
+func NewQuestionUseCase(
+	qr repository.QuestionRepository,
+	ttr repository.TestTemplateRepository,
+	tocr repository.TestOfClassRepository,
+) *QuestionUseCase {
+	return &QuestionUseCase{
+		QuestionRepo:     qr,
+		TestTemplateRepo: ttr,
+		TestOfClassRepo:  tocr,
+	}
 }
 
 // QuestionFilters re-exports the repository type so handlers can keep the
@@ -61,8 +83,44 @@ func (uc *QuestionUseCase) GetAllQuestionsOfTest(ctx context.Context, ids []prim
 	return uc.QuestionRepo.GetAllQuestions(ctx, ids)
 }
 
-func (uc *QuestionUseCase) DeleteQuestion(ctx context.Context, q entity.Question) error {
-	return uc.QuestionRepo.DeleteQuestion(ctx, q)
+// DeleteQuestion checks whether q is still referenced in any test template or
+// test_of_class for q.Metadata.User_ID. If yes and force=false → returns
+// ErrQuestionInUse + populated usage. If force=true → $pull from all tests then
+// delete. If not used anywhere → straight delete.
+func (uc *QuestionUseCase) DeleteQuestion(
+	ctx context.Context,
+	q entity.Question,
+	force bool,
+) (QuestionUsage, error) {
+	owner := q.Metadata.User_ID
+	usage := QuestionUsage{}
+
+	tt, err := uc.TestTemplateRepo.CountUsingQuestion(ctx, owner, q.ID)
+	if err != nil {
+		return usage, err
+	}
+	toc, err := uc.TestOfClassRepo.CountUsingQuestion(ctx, owner, q.ID)
+	if err != nil {
+		return usage, err
+	}
+	usage.TestTemplates = tt
+	usage.TestOfClass = toc
+
+	if (tt > 0 || toc > 0) && !force {
+		return usage, ErrQuestionInUse
+	}
+
+	if tt > 0 {
+		if _, err := uc.TestTemplateRepo.PullQuestionFromAll(ctx, owner, q.ID); err != nil {
+			return usage, err
+		}
+	}
+	if toc > 0 {
+		if _, err := uc.TestOfClassRepo.PullQuestionFromAll(ctx, owner, q.ID); err != nil {
+			return usage, err
+		}
+	}
+	return usage, uc.QuestionRepo.DeleteQuestion(ctx, q)
 }
 
 // ValidateQuestion enforces per-type invariants per CLAUDE.md D2.

@@ -28,4 +28,20 @@ type TestOfClassRepository interface {
 		ctx context.Context,
 		userID string,
 		id primitive.ObjectID) error
+
+	// CountUsingQuestion returns how many test_of_class docs (owned via class
+	// owner or any class) have questionID in question_ids. We do NOT filter
+	// by user_id because a question may also be embedded in tests created by
+	// the owner inside a class — owner_id is on the TestOfClass row.
+	CountUsingQuestion(
+		ctx context.Context,
+		ownerID string,
+		questionID primitive.ObjectID) (int64, error)
+
+	// PullQuestionFromAll removes questionID from question_ids in every
+	// test_of_class doc owned by ownerID.
+	PullQuestionFromAll(
+		ctx context.Context,
+		ownerID string,
+		questionID primitive.ObjectID) (int64, error)
 }

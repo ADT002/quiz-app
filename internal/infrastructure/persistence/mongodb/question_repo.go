@@ -169,6 +169,28 @@ func (r *QuestionMongoRepository) UpdateQuestion(ctx context.Context, q entity.Q
 	return q, nil
 }
 
+func (r *QuestionMongoRepository) CountByTopic(
+	ctx context.Context,
+	ownerID string,
+	topicID primitive.ObjectID,
+) (int64, error) {
+	return r.coll.CountDocuments(ctx, bson.M{
+		"metadata.user_id": ownerID,
+		"topic":            topicID,
+	})
+}
+
+func (r *QuestionMongoRepository) CountByLevel(
+	ctx context.Context,
+	ownerID string,
+	levelID primitive.ObjectID,
+) (int64, error) {
+	return r.coll.CountDocuments(ctx, bson.M{
+		"metadata.user_id": ownerID,
+		"level":            levelID,
+	})
+}
+
 func (r *QuestionMongoRepository) DeleteQuestion(ctx context.Context, q entity.Question) error {
 	filter := bson.M{"metadata.user_id": q.Metadata.User_ID, "_id": q.ID}
 	_, err := r.CollRepo.Delete(ctx, filter)
